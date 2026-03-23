@@ -1,3 +1,4 @@
 github-runner.yaml
 exporter/main
 test/*
+github-runner-prometheus-exporter

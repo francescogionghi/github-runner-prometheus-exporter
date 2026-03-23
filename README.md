@@ -1,133 +1,234 @@
 # GitHub Runner Prometheus Exporter
 
-**Work in Progress**: This project is under active development. Some features may be incomplete or subject to change. Please wait for the official release.
+`github-runner-prometheus-exporter` exposes Prometheus metrics for a self-hosted GitHub Actions runner by reading local runner state and logs on the runner host itself.
 
-## Project Goal
+This project is currently optimized for one runner per exporter process. It is useful when GitHub's UI and APIs are not enough for host-level observability, runner utilization, and workflow timing on self-hosted runners.
 
-The GitHub Runner Prometheus Exporter provides a solution for monitoring self-hosted GitHub runners at scale. The default GitHub API lacks efficiency for real-time, fine-grained metrics across multiple runners. This exporter runs locally on the same machine as the GitHub runner, scrapes logs, and exposes detailed Prometheus metrics for real-time observability. It is designed to work in diverse environments, including air-gapped or restricted setups, and supports bare metal, on-premises, or cloud-based runners (e.g., GCP, AWS EC2).
+## What It Does
 
-## Purpose
+- Exposes runner busy/idle state
+- Exposes workflow timing metrics from `Worker_*.log`
+- Exposes lightweight event metadata from `event.json`
+- Exposes process metrics for the exporter itself
+- Exposes disk usage for `/` and `/tmp`
 
-- Overcome limitations of the GitHub API for monitoring multiple self-hosted runners.
-- Provide log-based Prometheus metrics for workflow execution (e.g., start time, end time, duration, status).
-- Include system-level metrics (e.g., disk usage, CPU, memory, network) for comprehensive runner health monitoring.
-- Enable full control over runner metrics in production environments.
+## Current Model
+
+- One exporter process monitors one runner
+- The runner is selected from config
+- If multiple runners are configured, only one should be enabled, or `RUNNER_NAME` must be set
+- The exporter is expected to run on the same machine as the GitHub runner
 
 ## How It Works
 
-The exporter is a Go-based service that:
-1. Monitors the GitHub runner's log directory (e.g., `worker.log`, `runner.log`).
-2. Parses logs to extract workflow and system metrics.
-3. Exposes metrics in Prometheus format via an HTTP endpoint (`/metrics`).
+The exporter combines two runner-local sources:
 
-Example metric:
-```
-# HELP github_workflow_duration_seconds Duration of GitHub workflow run
-# TYPE github_workflow_duration_seconds gauge
-github_workflow_duration_seconds{runner_name="gpu-runner",status="success"} 142.5
-```
+1. `event.json`
+   - Used for busy/idle state
+   - Used for repository / workflow event metadata
+   - This file is ephemeral and may only exist while a job is active
+
+2. `Worker_*.log`
+   - Used for workflow start time
+   - Used for workflow end time
+   - Used for workflow duration
+   - Used for `run_id`, `repository`, `repository_owner`, and `workflow`
+
+In addition, Prometheus `ProcessCollector` is registered for exporter process metrics, and a custom collector reports disk usage for `/` and `/tmp`.
 
 ## Metrics
 
-The exporter provides the following metrics, with additional system and process metrics for enhanced observability:
+All metrics are exported with common runner labels through the registry wrapper:
 
-| Metric                                    | Labels                                                  | Description                                              |
-|-------------------------------------------|---------------------------------------------------------|----------------------------------------------------------|
-| `github_runner_static_info`               | `runner_names`, `group_names`, `hostname`, `os`, `mode` | Static configuration details of the runner               |
-| `github_workflow_start_timestamp_seconds` | `run_id`, `job_name`, `runner_name`, `runner_group`, `org`, `repo`, `workflow` | Start time of a workflow run                             |
-| `github_workflow_end_timestamp_seconds`   | `run_id`, `job_name`, `runner_name`, `runner_group`, `org`, `repo`, `workflow` | End time of a workflow run                               |
-| `github_workflow_duration_seconds`        | `run_id`, `job_name`, `runner_name`, `runner_group`, `org`, `repo`, `workflow`, `status` | Duration of a workflow run                               |
-| `github_event_triggered_total`            | `hostname`, `org`, `os`, `repo`, `runner_group`, `runner_name`, `workflow` | Total number of workflow events triggered                |
-| `github_runner_state`                     | `hostname`, `os`, `runner_group`, `runner_name`, `state` | Runner state (1=busy, 0=idle)                           |
-| `disk_usage_bytes`                        | `hostname`, `mount`, `os`, `runner_group`, `runner_name`, `type` | Disk usage for key mountpoints (`free`, `used`, `total`, `used_percent`) |
-| `process_cpu_seconds_total`               | `hostname`, `os`, `runner_group`, `runner_name`         | Total user and system CPU time spent in seconds          |
-| `process_max_fds`                         | `hostname`, `os`, `runner_group`, `runner_name`         | Maximum number of open file descriptors                  |
-| `process_network_receive_bytes_total`     | `hostname`, `os`, `runner_group`, `runner_name`         | Total bytes received by the process over the network     |
-| `process_network_transmit_bytes_total`    | `hostname`, `os`, `runner_group`, `runner_name`         | Total bytes sent by the process over the network         |
-| `process_open_fds`                        | `hostname`, `os`, `runner_group`, `runner_name`         | Number of open file descriptors                         |
-| `process_resident_memory_bytes`           | `hostname`, `os`, `runner_group`, `runner_name`         | Resident memory size in bytes                            |
-| `process_start_time_seconds`              | `hostname`, `os`, `runner_group`, `runner_name`         | Process start time since Unix epoch in seconds           |
-| `process_virtual_memory_bytes`            | `hostname`, `os`, `runner_group`, `runner_name`         | Virtual memory size in bytes                             |
-| `process_virtual_memory_max_bytes`        | `hostname`, `os`, `runner_group`, `runner_name`         | Maximum virtual memory available in bytes                |
+- `hostname`
+- `os`
+- `runner_name`
+- `runner_group`
+- any custom labels configured under `runners[].labels`
 
-Example metrics output:
-```
-# HELP disk_usage_bytes Disk usage for key mountpoints and total
-# TYPE disk_usage_bytes gauge
-disk_usage_bytes{hostname="insight-development-lab",mount="/",os="linux",runner_group="sre-group",runner_name="gpu-runner",type="free"} 1.51457210368e+11
-disk_usage_bytes{hostname="insight-development-lab",mount="/",os="linux",runner_group="sre-group",runner_name="gpu-runner",type="total"} 2.31907807232e+11
-disk_usage_bytes{hostname="insight-development-lab",mount="/",os="linux",runner_group="sre-group",runner_name="gpu-runner",type="used"} 6.8595818496e+10
-disk_usage_bytes{hostname="insight-development-lab",mount="/",os="linux",runner_group="sre-group",runner_name="gpu-runner",type="used_percent"} 31.172403692927343
-# HELP github_event_triggered_total Number of GitHub workflow events triggered
-# TYPE github_event_triggered_total counter
-github_event_triggered_total{hostname="insight-development-lab",org="insight-dev",os="linux",repo="manage-shared-runners",runner_group="sre-group",runner_name="sharred-runner",workflow=".github/workflows/check-details.yml"} 1
-# HELP github_runner_state State of the GitHub runner: 1=busy, 0=idle
-# TYPE github_runner_state gauge
-github_runner_state{hostname="insight-development-lab",os="linux",runner_group="sre-group",runner_name="gpu-runner",state="busy"} 1
-github_runner_state{hostname="insight-development-lab",os="linux",runner_group="sre-group",runner_name="gpu-runner",state="idle"} 0
-```
+Prometheus will also attach scrape labels such as `job` and `instance`.
 
-## Requirements
+### Runner Metrics
 
-- GitHub Self-Hosted Runners (tested on Linux)
-- Prometheus
-- Optional: Grafana for visualization (dashboard template in progress)
+| Metric | Extra Labels | Description |
+|---|---|---|
+| `github_runner_state` | `state` | Runner state where `busy=1` or `idle=1` |
 
-## Getting Started
+### Workflow Metrics
 
-### 1. Clone and Build
-```bash
-git clone https://github.com/thineshsubramani/github-runner-prometheus-exporter
-cd github-runner-prometheus-exporter
-go build -o exporter cmd/main.go
-```
+| Metric | Extra Labels | Description |
+|---|---|---|
+| `github_workflow_start_timestamp_seconds` | `run_id`, `repository`, `repository_owner`, `workflow` | Start time of the latest parsed workflow run |
+| `github_workflow_end_timestamp_seconds` | `run_id`, `repository`, `repository_owner`, `workflow` | End time of the latest parsed workflow run |
+| `github_workflow_duration_seconds` | `run_id`, `repository`, `repository_owner`, `workflow` | Duration of the latest parsed workflow run |
 
-### 2. Run the Exporter
-```bash
-./exporter --log-path /path/to/github/runner/_diag
-```
+### Event Metrics
 
-### 3. Configure Prometheus
-Add the following job to your Prometheus configuration:
+| Metric | Extra Labels | Description |
+|---|---|---|
+| `github_event_triggered_total` | `repository`, `repository_owner`, `workflow` | Workflow events observed while `event.json` exists |
+| `github_event_triggered_timestamp_seconds` | `repository`, `repository_owner`, `workflow` | Last observed event timestamp from `event.json` |
+
+### Host / Exporter Metrics
+
+| Metric | Extra Labels | Description |
+|---|---|---|
+| `disk_usage_bytes` | `mount`, `type` | Disk usage for `/` and `/tmp` with `type=total|used|free|used_percent` |
+| `process_cpu_seconds_total` | none | Exporter CPU time |
+| `process_resident_memory_bytes` | none | Exporter RSS memory |
+| `process_open_fds` | none | Exporter open file descriptors |
+| `process_network_receive_bytes_total` | none | Exporter process receive bytes |
+| `process_network_transmit_bytes_total` | none | Exporter process transmit bytes |
+| `process_start_time_seconds` | none | Exporter start time |
+| `process_virtual_memory_bytes` | none | Exporter virtual memory |
+| `process_virtual_memory_max_bytes` | none | Exporter virtual memory limit |
+| `process_max_fds` | none | Exporter max file descriptors |
+
+## Known Limitations
+
+- Workflow metrics are currently derived from the latest available worker log parsing model, not from a perfect run-event model
+- If a run produces multiple worker log files, multiple time series for the same `run_id` may exist historically
+- `event.json` is ephemeral, so event-based metrics are best treated as runtime/context signals rather than durable historical accounting
+- Multi-runner support in a single exporter process is not implemented
+
+## Configuration
+
+The exporter reads `github-runner.yaml` from the working directory or `/etc/github-runner-exporter/`.
+
+Example:
+
 ```yaml
-- job_name: 'github-runner-exporter'
-  static_configs:
-    - targets: ['<runner-host>:8080']
+server:
+  listen_address: ":9200"
+
+runners:
+  - name: hetzner-github-runner-11
+    group: Default
+    enable: true
+    mode: prod
+    labels:
+      provider: hetzner
+
+    logs:
+      worker: /opt/actions-runner/_diag
+      event: /opt/actions-runner/_work/_temp/_github_workflow/event.json
+
+    metrics:
+      enable_job: true
+      enable_event: true
 ```
 
-## Current Status
+### Important Notes
 
-- Completed:
-  - Log scraping and core metrics extraction
-  - Prometheus exporter functionality
-  - System and process metrics (disk, CPU, memory, network)
-  - Runner state detection (busy/idle)
-- In Progress:
-  - Workflow grouping logic
-  - Grafana dashboard template
-- Known Issues:
-  - Log parsing may be incomplete or misgrouped in edge cases
+- `logs.worker` must point to the directory containing `Worker_*.log`
+- `logs.event` must point to the runner's `event.json` path
+- The `event.json` parent directory may not exist while the runner is idle
+- If multiple runners are present in config, enable only one or set `RUNNER_NAME`
 
-## Contributing
+## Build
 
-Contributions are welcome! Please submit pull requests or open issues for bugs, feature requests, or improvements. Areas for collaboration include:
-- Enhanced log parsing logic
-- Grafana dashboard development
-- Support for multi-runner setups on a single host
+From the repository root:
 
-File issues or contribute at: [GitHub Issues](https://github.com/thineshsubramani/github-runner-prometheus-exporter/issues)
+```bash
+go build -o github-runner-prometheus-exporter ./cmd/exporter
+```
 
-## Roadmap
+This produces:
 
-- Improve runner state monitoring (avoid polling)
-- Add support for log ingestion via Filebeat or Fluent Bit
-- Implement multi-runner support with master/child architecture
-- Enhance Grafana dashboard for comprehensive visualization
+```bash
+./github-runner-prometheus-exporter
+```
 
-## About
+If you install it globally:
 
-This project was developed to address real-world challenges in monitoring GitHub runners in production environments. It has been deployed in an enterprise setup with over 200 globally distributed runner servers, enabling insights into runner utilization across teams. The project aligns with the author's focus on observability, infrastructure monitoring, and log-to-metrics pipelines as part of a transition from DevOps to SRE.
+```bash
+sudo mv github-runner-prometheus-exporter /usr/local/bin/github-runner-prometheus-exporter
+```
 
-## Contact
+## Run
 
-For bugs, feature requests, or contributions, please use [GitHub Issues](https://github.com/thineshsubramani/github-runner-prometheus-exporter/issues).
+```bash
+./github-runner-prometheus-exporter
+```
+
+The exporter serves:
+
+- `/metrics`
+- `/health`
+
+By default it listens on `:9200`.
+
+## Prometheus Configuration
+
+Example scrape config:
+
+```yaml
+- job_name: github-runner-exporter
+  static_configs:
+    - targets:
+        - 127.0.0.1:9200
+```
+
+## Grafana
+
+A dashboard JSON is provided at:
+
+- [grafana/github-runner-exporter.json](/home/francesco/clones/github-runner-prometheus-exporter/grafana/github-runner-exporter.json)
+
+The dashboard is built around the current exporter metrics and expects:
+
+- `job="github-runner-exporter"` to exist in Prometheus
+- workflow metrics under `github_workflow_*`
+- repository filtering via the `repository` label
+
+Recommended import flow:
+
+1. Import the dashboard JSON as a new dashboard
+2. Select the Prometheus datasource during import
+3. Set `Job = github-runner-exporter`
+4. Narrow by `Runner Group`, `Provider`, `Hostname`, `Workflow`, or `Repository` as needed
+
+## Testing
+
+A simple way to exercise the runner is to add a manual GitHub Actions workflow using `workflow_dispatch` and let it:
+
+- print `GITHUB_EVENT_PATH`
+- create temporary disk activity under `/tmp`
+- sleep for a few minutes so Prometheus can observe busy state
+
+Useful PromQL checks during testing:
+
+```promql
+github_runner_state{job="github-runner-exporter"}
+```
+
+```promql
+github_workflow_duration_seconds{job="github-runner-exporter"}
+```
+
+```promql
+disk_usage_bytes{job="github-runner-exporter", mount="/", type="used_percent"}
+```
+
+```promql
+process_resident_memory_bytes{job="github-runner-exporter"}
+```
+
+## Why Use This Instead of Only GitHub
+
+GitHub gives control-plane visibility:
+
+- runner online/offline status
+- workflow and job history
+- queue and execution status
+
+This exporter adds data-plane visibility on the runner host:
+
+- local busy/idle state
+- workflow timing from runner logs
+- exporter process health
+- disk usage on the runner host
+
+## Status
+
+This project is still under active iteration. The metric contract and dashboard are now aligned with the current implementation, but workflow parsing and event modeling are still being refined.
