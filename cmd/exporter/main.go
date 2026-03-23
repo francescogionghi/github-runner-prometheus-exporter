@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -21,8 +20,12 @@ func main() {
 
 	// ✅ Fallback to default port if not defined
 	if cfg.Server.ListenAddress == "" {
-		cfg.Server.ListenAddress = "9200"
+		cfg.Server.ListenAddress = ":9200"
 		log.Println("No listen_address in config, using default 9200")
+	}
+
+	if err := validator.ValidateConfig(cfg); err != nil {
+		log.Fatalf("❌ Invalid config: %v", err)
 	}
 
 	// // ✅ Path validation (Linux as default — extend for OS later)
@@ -37,11 +40,13 @@ func main() {
 	}
 
 	// ✅ Build Prometheus exporter
-	fmt.Println(cfg)
-	exp := exporter.New(cfg)
+	exp, err := exporter.New(cfg)
+	if err != nil {
+		log.Fatalf("❌ Failed to initialize exporter: %v", err)
+	}
 
 	// ✅ Serve metrics
 	handler := promhttp.HandlerFor(exp.Registry, promhttp.HandlerOpts{})
-	log.Printf("🚀 Exporter starting on http://localhost:%s/metrics", cfg.Server.ListenAddress)
-	server.Start(":"+cfg.Server.ListenAddress, handler)
+	log.Printf("🚀 Exporter starting on %s/metrics", cfg.Server.ListenAddress)
+	server.Start(cfg.Server.ListenAddress, handler)
 }

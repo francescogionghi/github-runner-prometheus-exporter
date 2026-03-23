@@ -18,7 +18,7 @@ func Start(listenAddr string, handler http.Handler) {
 		w.Write([]byte("ok"))
 	})
 
-	log.Printf("🚀 Exporter listening at http://localhost%s/metrics", listenAddr)
+	log.Printf("🚀 Exporter listening at %s/metrics", listenAddr)
 	if err := http.ListenAndServe(listenAddr, mux); err != nil {
 		log.Fatalf("❌ HTTP server error: %v", err)
 	}

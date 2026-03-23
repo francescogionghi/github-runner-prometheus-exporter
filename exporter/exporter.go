@@ -15,8 +15,12 @@ type Exporter struct {
 	Registry *prometheus.Registry
 }
 
-func New(cfg *config.Config) *Exporter {
+func New(cfg *config.Config) (*Exporter, error) {
 	reg := prometheus.NewRegistry()
+	runner, err := cfg.SelectedRunner()
+	if err != nil {
+		return nil, err
+	}
 
 	hostname, _ := os.Hostname()
 	labels := prometheus.Labels{
@@ -25,16 +29,16 @@ func New(cfg *config.Config) *Exporter {
 	}
 
 	// add custom labels from config
-	if cfg.Runners[0].Labels != nil {
-		for k, v := range cfg.Runners[0].Labels {
+	if runner.Labels != nil {
+		for k, v := range runner.Labels {
 			labels[k] = v
 		}
 	}
 
 	wrappedReg := prometheus.WrapRegistererWith(labels, reg)
 
-	runner_name := cfg.Runners[0].Name
-	group_name := cfg.Runners[0].Group
+	runner_name := runner.Name
+	group_name := runner.Group
 	runnerWrappedReg := prometheus.WrapRegistererWith(
 		prometheus.Labels{"runner_name": runner_name, "runner_group": group_name},
 		wrappedReg,
@@ -45,12 +49,12 @@ func New(cfg *config.Config) *Exporter {
 	// wrappedReg.MustRegister(collector.NewInfoCollector(cfg))
 	runnerWrappedReg.MustRegister(collector.NewDiskCollector())
 	// Custom collectors
-	if cfg.Runners[0].Metrics.EnableJob && cfg.Runners[0].Logs.Worker != "" {
-		runnerWrappedReg.MustRegister(collector.NewWorkerCollector(cfg.Runners[0].Logs.Worker))
+	if runner.Metrics.EnableJob && runner.Logs.Worker != "" {
+		runnerWrappedReg.MustRegister(collector.NewWorkerCollector(runner.Logs.Worker))
 	}
-	if cfg.Runners[0].Metrics.EnableEvent {
+	if runner.Metrics.EnableEvent {
 		runnerWrappedReg.MustRegister(collector.NewEventCollector(cfg))
 	}
 
-	return &Exporter{Registry: reg}
+	return &Exporter{Registry: reg}, nil
 }
