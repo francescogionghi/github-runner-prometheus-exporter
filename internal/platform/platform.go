@@ -2,7 +2,6 @@ package platform
 
 import (
 	"log"
-	"os"
 	"runtime"
 
 	"github.com/thineshsubramani/github-runner-prometheus-exporter/config"
@@ -18,26 +17,17 @@ func GetOS() string {
 //
 
 func DefaultPath(cfg *config.Config) string {
-	runnerName := os.Getenv("RUNNER_NAME")
-	if runnerName == "" {
-		log.Println("⚠️  RUNNER_NAME env var not set, defaulting to first runner in config")
-		if len(cfg.Runners) == 0 {
-			log.Fatal("❌ no runners defined in config")
-		}
-		runnerName = cfg.Runners[0].Name
+	runner, err := cfg.SelectedRunner()
+	if err != nil {
+		log.Fatalf("failed to resolve runner: %v", err)
 	}
 
-	for _, runner := range cfg.Runners {
-		if runner.Name == runnerName {
-			// prefer config path if given
-			if runner.Mode == "test" && runner.Test.EventPath != "" {
-				return runner.Test.EventPath
-			}
-			if runner.Mode == "prod" && runner.Logs.Event != "" {
-				return runner.Logs.Event
-			}
-			break
-		}
+	// prefer config path if given
+	if runner.Mode == "test" && runner.Test.EventPath != "" {
+		return runner.Test.EventPath
+	}
+	if runner.Mode == "prod" && runner.Logs.Event != "" {
+		return runner.Logs.Event
 	}
 
 	// fallback defaults based on OS
